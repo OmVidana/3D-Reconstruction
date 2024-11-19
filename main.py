@@ -142,7 +142,7 @@ class App(customtkinter.CTk, Window):
                 "<<ReconstructionError>>",
                 lambda event: messagebox.showerror("Error", f"Ocurrió un error: {event}"),
             )
-            output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output.obj")
+            output_path = os.path.dirname(os.path.abspath(__file__))
             self.__reconstruct_toplevel.start_reconstruction(self.carousel.images_paths, output_path)
             self.__reconstruct_toplevel.focus()
         else:
