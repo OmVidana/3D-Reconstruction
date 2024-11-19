@@ -1,10 +1,14 @@
-from typing import Literal, Optional, Tuple, Type, Union
+import os
+import tkinter
+import tkinter.messagebox
+from typing import Literal, Optional, Tuple, Union
 
 import customtkinter
 from customtkinter import filedialog
 from customtkinter.windows.widgets.utility import pop_from_dict_by_set
-from PIL import Image, ImageFile
 
+from carousel import Carousel
+from reconstruct_toplevel import ToplevelReconstruction
 from window import Window
 
 
@@ -33,20 +37,23 @@ class App(customtkinter.CTk, Window):
             self,
             **pop_from_dict_by_set(kwargs, self._valid_window_constructor_arguments),
         )
-        self.__top_levels: dict[str, Type[customtkinter.CTkToplevel]] = kwargs.get("top_levels", {})
-        self.__top_level: customtkinter.CTkToplevel | None = None
-        self.selected_images: dict[str, ImageFile.ImageFile] = {}
+        self.__reconstruct_toplevel: ToplevelReconstruction | None = None
         self.appearance: Literal["light", "dark", "system"] | str = kwargs.get("appearance", "system")
         self.color_theme: Literal["blue", "green", "dark-blue"] | str = kwargs.get("color_theme", "dark-blue")
 
-        self._setup()
-        self._ui_elements()
+        self._setup_window()
+        self._ui_elements_window()
+        self.update()
 
     # Main Window Setup
 
-    def _setup(self):
+    def _setup_window(self):
         customtkinter.set_appearance_mode(self.appearance)
         customtkinter.set_default_color_theme(self.color_theme)
+        self.title(self.window_title)
+        self.iconbitmap(default=self.icon)
+        self.resizable(True, False)
+
         self.geometry(
             Window.center_to_display(
                 self.winfo_screenwidth(),
@@ -56,67 +63,95 @@ class App(customtkinter.CTk, Window):
                 self._get_window_scaling(),
             )
         )
-        self.title(self.window_title)
-        self.iconbitmap(default=self.icon)
-        self.update()
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=3)
+        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=2)
 
     # Objects and Layout
-    # TODO: Add a Carousel of Images to display them.
-    # TODO: Add a button to start the 3D Reconstruction.
-    # TODO: Add a Progress Top Level Window to show the progress of the 3D Reconstruction.
-    def _ui_elements(self):
+    def _ui_elements_window(self):
         """
         Creates the elements to displays and produces the layout.
         """
 
-        self.button = customtkinter.CTkButton(self, text="Seleccionar Archivos", command=self.__select_images)
-        self.button.pack(side="top", padx=20, pady=20)
+        self.choose_button = customtkinter.CTkButton(self, text="Seleccionar Imágenes", command=self.__select_images)
+        self.choose_button.grid(row=0, column=0, padx=(32, 32), pady=(32, 16), sticky="nsew")
+        self.carousel = Carousel(self, label_text="Imágenes Seleccionadas", label_fg_color="transparent")
+        self.carousel.grid(row=1, column=0, padx=(32, 32), pady=(16, 16), sticky="nsew")
+        self.clean_button = customtkinter.CTkButton(self, text="Limpiar Seleccion", command=self.carousel.clear)
+        self.clean_button.grid(row=2, column=0, padx=(32, 32), pady=(16, 16), sticky="nsew")
+        self.reconstruct_button = customtkinter.CTkButton(
+            self, text="Comenzar a Reconstruir en 3D", command=self.__start_reconstruction
+        )
+        self.reconstruct_button.grid(row=3, column=0, padx=(32, 32), pady=(16, 32), sticky="nsew")
 
     # Event Listeners
-
-    def __open_top_level(self, top_level_key: str):
-        """
-        Opens a Top Level from the availables in the application.
-        If there is one active, focus current.
-        :param top_level_key: Selected Top Level name.
-        """
-
-        if self.__top_level is None or not self.__top_level.winfo_exists():
-            if top_level_key in self.__top_levels:
-                self.__top_level = self.__top_levels[top_level_key](self)
-
-                self.__top_level.focus()
-            else:
-                valid_keys = ", ".join(self.__top_levels.keys())
-                raise ValueError(f"Top level window '{top_level_key}' was not found. Valid options are: {valid_keys}")
-        else:
-            self.__top_level.focus()
 
     def __select_images(self):
         """
         Selects a series of Images to a Dictionary of paths and images.
         """
 
-        images = filedialog.askopenfilenames(
+        image_paths = filedialog.askopenfilenames(
             filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg;*.bmp;*.gif")],
             initialdir="~",
             parent=self,
             title="Selecciona las imágenes a procesar",
         )
 
-        if images:
-            self.selected_images.clear()
+        if image_paths:
+            for image_path in image_paths:
+                if image_path not in self.carousel.images_paths:
+                    self.carousel.add_image(image_path)
 
-            for image in images:
-                self.selected_images[image] = Image.open(image)
+    def __start_reconstruction(self):
+        """
+        Starts the 3D Reconstruction process.
+        """
+        if not self.carousel.images_paths:
+            tkinter.messagebox.showwarning(
+                "Sin Imágenes",
+                "No hay imágenes seleccionadas para realizar la reconstrucción 3D.",
+                parent=self,
+            )
+            return
+
+        if len(self.carousel.images_paths) < 2:
+            tkinter.messagebox.showwarning(
+                "Pocas Imágenes",
+                "Se necesitan al menos dos imágenes para realizar la reconstrucción 3D.",
+                parent=self,
+            )
+            return
+
+        if self.__reconstruct_toplevel is None or not self.__reconstruct_toplevel.winfo_exists():
+            top_level_kwargs = {
+                "window_title": "Procesando Reconstrucción 3D",
+                "icon": self.icon,
+                "width": 200,
+                "height": 120,
+            }
+            self.__reconstruct_toplevel = ToplevelReconstruction(self, **top_level_kwargs)
+            self.bind(
+                "<<ReconstructionComplete>>",
+                lambda event: tkinter.messagebox.showinfo("Completado", f"Archivo creado en: {event}"),
+            )
+            self.bind(
+                "<<ReconstructionError>>",
+                lambda event: tkinter.messagebox.showerror("Error", f"Ocurrió un error: {event}"),
+            )
+            output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output.obj")
+            self.__reconstruct_toplevel.start_reconstruction(self.carousel.images_paths, output_path)
+            self.__reconstruct_toplevel.focus()
+        else:
+            self.__reconstruct_toplevel.focus()
 
 
 def main():
-    app_top_levels: dict[str, Type[customtkinter.CTkToplevel]] = {}
-
     app_window_kwargs = {
-        "title": "Reconstrucción 3D",
-        "top_levels": app_top_levels,
+        "window_title": "Reconstrucción 3D",
         "width": 600,
         "height": 800,
         "appearance": "system",
@@ -129,5 +164,4 @@ def main():
 
 
 if __name__ == "__main__":
-    print("Running main.py")
     main()
