@@ -22,6 +22,8 @@ class ToplevelReconstruction(customtkinter.CTkToplevel, Window):
             **pop_from_dict_by_set(kwargs, self._valid_window_constructor_arguments),
         )
 
+        self.thread = None
+
         self._setup_window()
         self._ui_elements_window()
         self.update()
