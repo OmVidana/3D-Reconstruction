@@ -1,8 +1,9 @@
 import time
 
-# import cv2
-# import numpy as np
-# import trimesh
+import cv2
+import numpy as np
+import trimesh
+
 # from PIL import ExifTags, Image
 #
 # def calibrate_images(image_paths):
@@ -27,51 +28,125 @@ import time
 #     return calibrated_images
 
 
-# def reconstruct_3d(image_paths, output_path, progress_callback):
-#     """
-#     Reconstrucción 3D a partir de imágenes.
-#     """
-#     # Calibrar imágenes
-#     images = calibrate_images(image_paths)
-#     total_steps = len(images) * 2  # Ejemplo: detección y reconstrucción
+def reconstruct_3d(image_paths, output_path, progress_callback=None):
+    """
+    Reconstrucción 3D a partir de múltiples imágenes y creación directa de una malla.
+    """
+    # Cargar imágenes
+    images = []
+    for idx, path in enumerate(image_paths):
+        img = cv2.imread(path)
+        if img is None:
+            print(f"Error al cargar la imagen: {path}")
+            continue
+        print(f"Imagen {idx} cargada: Tamaño = {img.shape}")
+        images.append(img)
 
-#     # Detectar características con SIFT
-#     sift = cv2.SIFT_create()
-#     keypoints_list, descriptors_list = [], []
+    if len(images) < 2:
+        print("Se necesitan al menos dos imágenes válidas para la reconstrucción.")
+        return
 
-#     for idx, img in enumerate(images):
-#         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-#         keypoints, descriptors = sift.detectAndCompute(gray, None)
-#         keypoints_list.append(keypoints)
-#         descriptors_list.append(descriptors)
-#         progress_callback((idx + 1) / total_steps)
+    # Calcular pasos totales para el progreso
+    total_steps = len(images) + (len(images) - 1) + (len(images) - 1)  # Detección + emparejamiento + reconstrucción
 
-#     # Emparejar características
-#     bf = cv2.BFMatcher()
-#     matches = bf.knnMatch(descriptors_list[0], descriptors_list[1], k=2)
+    # Detectar características con SIFT
+    sift = cv2.SIFT_create(nfeatures=5000)  # Detectar hasta 5000 características por imagen
+    keypoints_list, descriptors_list = [], []
 
-#     good_matches = []
-#     for m, n in matches:
-#         if m.distance < 0.75 * n.distance:
-#             good_matches.append(m)
+    for idx, img in enumerate(images):
+        try:
+            gray = cv2.cvtColor(np.ascontiguousarray(img), cv2.COLOR_BGR2GRAY)
+            keypoints, descriptors = sift.detectAndCompute(gray, None)
+            keypoints_list.append(keypoints)
+            descriptors_list.append(descriptors)
+            print(f"Imagen {idx}: {len(keypoints)} características detectadas")
+            if progress_callback:
+                progress_callback((idx + 1) / total_steps)
+        except Exception as e:
+            print(f"Error al procesar la imagen {idx}: {e}")
 
-#     # Estimar estructura
-#     pts1 = np.float32([keypoints_list[0][m.queryIdx].pt for m in good_matches])
-#     pts2 = np.float32([keypoints_list[1][m.trainIdx].pt for m in good_matches])
+    # Emparejar características entre imágenes consecutivas
+    bf = cv2.BFMatcher()
+    all_matches = []
 
-#     E, mask = cv2.findEssentialMat(pts1, pts2, method=cv2.RANSAC)
-#     _, R, t, _ = cv2.recoverPose(E, pts1, pts2)
+    for i in range(len(descriptors_list) - 1):
+        matches = bf.knnMatch(descriptors_list[i], descriptors_list[i + 1], k=2)
 
-#     # Reconstruir en 3D
-#     points = np.hstack((pts1, np.ones((pts1.shape[0], 1)))).T
-#     reconstructed_points = (R @ points + t).T
+        good_matches = []
+        for m, n in matches:
+            if m.distance < 0.75 * n.distance:  # Ratio test de Lowe
+                good_matches.append(m)
+        all_matches.append(good_matches)
 
-#     # Crear nube de puntos y exportar
-#     point_cloud = trimesh.points.PointCloud(reconstructed_points)
-#     point_cloud.export(output_path)
+        print(f"Emparejamientos entre imágenes {i} y {i+1}: {len(good_matches)} coincidencias")
+        if len(good_matches) < 10:
+            print(f"Advertencia: Insuficientes coincidencias entre imágenes {i} y {i+1}")
+        if progress_callback:
+            progress_callback((len(keypoints_list) + i + 1) / total_steps)
 
-#     print(f"Reconstrucción completada y guardada en: {output_path}")
-#     progress_callback(1.0)
+    # Reconstrucción 3D iterativa
+    reconstructed_points = []
+    current_R = np.eye(3)  # Matriz de rotación inicial
+    current_t = np.zeros((3, 1))  # Traslación inicial
+
+    for i, matches in enumerate(all_matches):
+        if len(matches) < 8:
+            print(f"Saltando triangulación para imágenes {i} y {i+1} por insuficientes coincidencias")
+            continue
+
+        pts1 = np.float32([keypoints_list[i][m.queryIdx].pt for m in matches])
+        pts2 = np.float32([keypoints_list[i + 1][m.trainIdx].pt for m in matches])
+
+        try:
+            E, mask = cv2.findEssentialMat(pts1, pts2, method=cv2.RANSAC, threshold=1.0)
+            _, R, t, _ = cv2.recoverPose(E, pts1, pts2)
+
+            # Actualizamos la posición acumulada
+            current_R = R @ current_R
+            current_t = current_t + current_R @ t
+
+            # Triangular puntos
+            proj_matrix1 = np.hstack((np.eye(3), np.zeros((3, 1))))
+            proj_matrix2 = np.hstack((current_R, current_t))
+
+            points_4d = cv2.triangulatePoints(proj_matrix1, proj_matrix2, pts1.T, pts2.T)
+            points_3d = points_4d[:3] / points_4d[3]  # Convertimos de coordenadas homogéneas a 3D
+            reconstructed_points.append(points_3d.T)
+
+            print(f"Puntos triangulados entre imágenes {i} y {i+1}: {points_3d.shape[1]}")
+            if progress_callback:
+                progress_callback((len(keypoints_list) + len(all_matches) + i + 1) / total_steps)
+        except Exception as e:
+            print(f"Error al reconstruir 3D entre imágenes {i} y {i+1}: {e}")
+
+    # Crear nube de puntos final
+    if len(reconstructed_points) == 0:
+        print("No se generaron puntos 3D válidos.")
+        return
+
+    reconstructed_points = np.vstack(reconstructed_points)  # Unimos todos los puntos 3D
+
+    # Filtrar puntos inválidos
+    reconstructed_points = reconstructed_points[~np.isnan(reconstructed_points).any(axis=1)]
+    reconstructed_points = reconstructed_points[~np.isinf(reconstructed_points).any(axis=1)]
+    print(f"Puntos válidos finales: {reconstructed_points.shape[0]}")
+
+    # Exportar la nube de puntos para depuración
+    np.savetxt("nube_puntos.xyz", reconstructed_points, delimiter=" ", header="X Y Z", comments="")
+
+    # Crear una malla directamente desde la nube de puntos
+    print("Generando malla 3D a partir de la nube de puntos...")
+    try:
+        mesh = trimesh.Trimesh(vertices=reconstructed_points, process=False)
+        mesh = trimesh.convex.convex_hull(mesh)  # Reconstrucción usando Convex Hull
+        mesh.export(output_path)
+        print(f"Malla 3D guardada en: {output_path}")
+    except Exception as e:
+        print("Error al generar la malla:", str(e))
+        return
+
+    if progress_callback:
+        progress_callback(1.0)
 
 
 def reconstruct_3d_mock(image_paths, output_path):

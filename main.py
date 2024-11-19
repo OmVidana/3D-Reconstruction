@@ -1,6 +1,5 @@
 import os
-import tkinter
-import tkinter.messagebox
+from tkinter import messagebox
 from typing import Literal, Optional, Tuple, Union
 
 import customtkinter
@@ -53,6 +52,7 @@ class App(customtkinter.CTk, Window):
         self.title(self.window_title)
         self.iconbitmap(default=self.icon)
         self.resizable(True, False)
+        self.protocol("WM_DELETE_WINDOW", self.__on_close_operation)
 
         self.geometry(
             Window.center_to_display(
@@ -111,7 +111,7 @@ class App(customtkinter.CTk, Window):
         Starts the 3D Reconstruction process.
         """
         if not self.carousel.images_paths:
-            tkinter.messagebox.showwarning(
+            messagebox.showwarning(
                 "Sin Imágenes",
                 "No hay imágenes seleccionadas para realizar la reconstrucción 3D.",
                 parent=self,
@@ -119,7 +119,7 @@ class App(customtkinter.CTk, Window):
             return
 
         if len(self.carousel.images_paths) < 2:
-            tkinter.messagebox.showwarning(
+            messagebox.showwarning(
                 "Pocas Imágenes",
                 "Se necesitan al menos dos imágenes para realizar la reconstrucción 3D.",
                 parent=self,
@@ -136,17 +136,27 @@ class App(customtkinter.CTk, Window):
             self.__reconstruct_toplevel = ToplevelReconstruction(self, **top_level_kwargs)
             self.bind(
                 "<<ReconstructionComplete>>",
-                lambda event: tkinter.messagebox.showinfo("Completado", f"Archivo creado en: {event}"),
+                lambda event: messagebox.showinfo("Completado", f"Archivo creado en: {event}"),
             )
             self.bind(
                 "<<ReconstructionError>>",
-                lambda event: tkinter.messagebox.showerror("Error", f"Ocurrió un error: {event}"),
+                lambda event: messagebox.showerror("Error", f"Ocurrió un error: {event}"),
             )
             output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output.obj")
             self.__reconstruct_toplevel.start_reconstruction(self.carousel.images_paths, output_path)
             self.__reconstruct_toplevel.focus()
         else:
             self.__reconstruct_toplevel.focus()
+
+    def __on_close_operation(self):
+        if self.__reconstruct_toplevel is not None and self.__reconstruct_toplevel.winfo_exists():
+            messagebox.showwarning(
+                "Error",
+                "No puede cerrar la ventana mientras la reconstrucción esté en progreso.",
+                parent=self,
+            )
+        else:
+            self.quit()
 
 
 def main():
